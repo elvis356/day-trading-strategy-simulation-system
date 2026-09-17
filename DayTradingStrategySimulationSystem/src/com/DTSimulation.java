@@ -3,11 +3,11 @@ package com;
 import java.time.LocalTime;
 
 /**
- * 模擬系統核心模組與控制器類別 (Model + Controller)
+ * 模擬系統核心模組與控制器抽象類別 (Abstract Model + Controller)
  * 包含 KBar（K 線資料結構）、RiskEngine（風控管理）、TradingEngine（交易執行引擎）
- * 以及整合原 Controller 的多策略邏輯與狀態管理
+ * 以及採用繼承與覆寫設計的多策略架構基底
  */
-class DTSimulation {
+public abstract class DTSimulation {
 	// ===================== 欄位宣告 (Fields) =====================
 	// 1. 基本設定與參數欄位 (初始化時決定)
 	/** 商品代號（例如：台指期、特定股票代碼等） */
@@ -45,17 +45,17 @@ class DTSimulation {
 
 	// 4. 策略運作暫存狀態欄位 (輔助各策略進行計算與型態比對)
 	/** 計算已接收的 K 線根數（常應用於開盤初期計算特定區間，如前 3 根 5 分鐘 K 線即前 15 分鐘） */
-	private int barCount = 0;
+	protected int barCount = 0;
 	/** 紀錄開盤區間突破（ORB）策略中的最高價與最低價邊界 */
-	private double orbHigh, orbLow;
+	protected double orbHigh, orbLow;
 	/** 用於計算 VWAP（成交量加權平均價）的累計「價格 × 成交量 (PV)」乘積總和 */
-	private double cumulativePV = 0.0;
+	protected double cumulativePV = 0.0;
 	/** 用於計算 VWAP 的累計總成交量 */
-	private long cumulativeVol = 0;
+	protected long cumulativeVol = 0;
 	/** 紀錄系統是否已經擁有上一根 K 線的暫存資料，供 V 轉等需要比對前後 K 線型態的策略使用 */
-	private boolean hasLastBar = false;
+	protected boolean hasLastBar = false;
 	/** 紀錄前一根 K 線的開盤價、收盤價、最低價、最高價，用於型態學比對 */
-	private double lastOpen, lastClose, lastLow, lastHigh;
+	protected double lastOpen, lastClose, lastLow, lastHigh;
 
 	// ===================== 1. 建構子 (Constructor) =====================
 	/**
@@ -104,7 +104,7 @@ class DTSimulation {
 			return logBuilder.toString();
 		}
 
-		// 3. 根據策略類型執行對應演算法
+		// 3. 根據策略類型執行對應演算法 (多型呼叫子類別覆寫的方法)
 		String strategyMsg = runStrategy();
 		if (strategyMsg != null && !strategyMsg.isEmpty()) {
 			logBuilder.append(strategyMsg).append("\n");
@@ -161,134 +161,10 @@ class DTSimulation {
 
 	// ===================== 4. 策略執行方法 (Strategies) =====================
 	/**
-	 * 根據指定策略進行派發處理
+	 * 抽象策略執行方法，由各具體策略子類別去覆寫 (Override) 實作
 	 * @return 策略觸發後的訊號或日誌訊息
 	 */
-	private String runStrategy() {
-		switch (strategyType) {
-			case "開盤區間突破 (ORB)":
-				return runORB();
-			case "均線均值回歸 (Mean Reversion)":
-				return runMeanReversion();
-			case "VWAP 價量均線突破 (VWAP Breakout/Cross)":
-				return runVWAP();
-			case "V 轉反彈 (V-Shape Reversal)":
-				return runVShape();
-			default:
-				return "";
-		}
-	}
-
-	/**
-	 * 執行開盤區間突破 (ORB) 策略
-	 * 前三根 K 線（共 15 分鐘）建立當日開盤高低價區間，之後價格突破上緣做多、跌破下緣做空
-	 * @return 策略觸發後的訊號或日誌訊息
-	 */
-	private String runORB() {
-		// 收集前 3 根 K 線以建立開盤區間 (Opening Range)
-		if (barCount < 3) {
-			if (barCount == 0) {
-				orbHigh = high;
-				orbLow = low;
-			} else {
-				if (high > orbHigh) orbHigh = high;
-				if (low < orbLow) orbLow = low;
-			}
-			barCount++;
-			if (barCount == 3) {
-				return String.format("【%s - ORB 建立】15 分鐘最高: %.2f, 最低: %.2f", symbol, orbHigh, orbLow);
-			}
-			return null;
-		}
-		
-		// 區間建立完成後，在空倉狀態下尋找突破機會
-		if (position == 0) {
-			if (close > orbHigh) {
-				// 向上突破，觸發做多
-				return triggerTrade(1, close, Math.max(orbLow, close * 0.99));
-			} else if (close < orbLow) {
-				// 向下跌破，觸發做空
-				return triggerTrade(-1, close, Math.min(orbHigh, close * 1.01));
-			}
-		}
-		return null;
-	}
-
-	/**
-	 * 執行均線均值回歸策略
-	 * 當價格過度偏離模擬均線時，假設其將回歸均值，進行逆勢超買做空或超賣做多
-	 * @return 策略觸發後的訊號或日誌訊息
-	 */
-	private String runMeanReversion() {
-		double estimatedMA = close * 0.983; // 模擬均線 (假設現價高於均線)
-		double estimatedMABear = close * 1.017; // 模擬均線 (假設現價低於均線)
-
-		if (position == 0) {
-			// 價格過度高於均線，超買做空
-			if ((close - estimatedMA) / estimatedMA > 0.015) {
-				String tradeLog = triggerTrade(-1, close, close * 1.01);
-				return String.format("【%s - 均值回歸】價格過度偏離均線上方，觸發做空訊號！\n", symbol) + (tradeLog != null ? tradeLog : "");
-			}
-			// 價格過度低於均線，超賣做多
-			else if ((estimatedMABear - close) / estimatedMABear > 0.015) {
-				String tradeLog = triggerTrade(1, close, close * 0.99);
-				return String.format("【%s - 均值回歸】價格過度偏離均線下方，觸發做多訊號！\n", symbol) + (tradeLog != null ? tradeLog : "");
-			}
-		}
-		return null;
-	}
-
-	/**
-	 * 執行 VWAP 價量均線突破策略
-	 * 動態計算成交量加權平均價（VWAP），當價格帶量向上或向下貫穿 VWAP 時順勢進場
-	 * @return 策略觸發後的訊號或日誌訊息
-	 */
-	private String runVWAP() {
-		cumulativePV += close * volume;
-		cumulativeVol += volume;
-		if (cumulativeVol == 0) return null;
-		double vwap = cumulativePV / cumulativeVol;
-
-		if (position == 0) {
-			// 帶量向上突破 VWAP
-			if (close > vwap && open < vwap) {
-				String tradeLog = triggerTrade(1, close, vwap);
-				return String.format("【%s - VWAP 突破】當前 VWAP: %.2f，價格帶量向上貫穿！\n", symbol, vwap) + (tradeLog != null ? tradeLog : "");
-			}
-			// 帶量向下貫穿 VWAP
-			else if (close < vwap && open > vwap) {
-				String tradeLog = triggerTrade(-1, close, vwap);
-				return String.format("【%s - VWAP 跌破】當前 VWAP: %.2f，價格帶量向下貫穿！\n", symbol, vwap) + (tradeLog != null ? tradeLog : "");
-			}
-		}
-		return null;
-	}
-
-	/**
-	 * 執行 V 轉反彈與倒 V 反轉策略
-	 * 透過比對前後兩根 K 線的價格型態（如長黑後出現強勢包覆收高即為 V 轉多頭訊號）
-	 * @return 策略觸發後的訊號或日誌訊息
-	 */
-	private String runVShape() {
-		if (hasLastBar && position == 0) {
-			// 多方：V 轉反彈 (前一根長黑，當前強勢包覆收高)
-			boolean lastIsBigRed = (lastOpen - lastClose) / lastOpen > 0.015;
-			boolean currentStrongGreen = close > lastOpen;
-			if (lastIsBigRed && currentStrongGreen) {
-				String tradeLog = triggerTrade(1, close, lastLow);
-				return String.format("【%s - V 轉反彈】前 K 長黑後本 K 強勢包覆，觸發多頭進場！\n", symbol) + (tradeLog != null ? tradeLog : "");
-			}
-
-			// 空方：倒 V 反轉 (前一根長紅，當前強勢殺盤收低跌破前開)
-			boolean lastIsBigGreen = (lastClose - lastOpen) / lastOpen > 0.015;
-			boolean currentStrongRed = close < lastOpen;
-			if (lastIsBigGreen && currentStrongRed) {
-				String tradeLog = triggerTrade(-1, close, lastHigh);
-				return String.format("【%s - 倒V反轉】前 K 長紅後本 K 強勢殺盤，觸發空頭進場！\n", symbol) + (tradeLog != null ? tradeLog : "");
-			}
-		}
-		return null;
-	}
+	protected abstract String runStrategy();
 
 	// ===================== 5. 交易執行與狀態管理方法 (Trading Execution & State) =====================
 	/**
@@ -298,7 +174,7 @@ class DTSimulation {
 	 * @param stop 預定停損價
 	 * @return 下單成功訊息或 null
 	 */
-	private String triggerTrade(int pos, double entry, double stop) {
+	protected String triggerTrade(int pos, double entry, double stop) {
 		double risk = Math.abs(entry - stop);
 		double calculatedTakeProfit = (pos == 1) ? entry + (risk * rrRatio) : entry - (risk * rrRatio);
 		int shares = calculatePositionSize(entry, stop);
@@ -356,14 +232,13 @@ class DTSimulation {
 	 * @return 本筆交易實現損益
 	 */
 	public double closePosition(String reason, double price) {
-		// 修正：計算總損益時必須乘上持倉部位方向與實際股數 (shares)
 		double pnl = (price - entryPrice) * position * shares;
 		this.dailyAccumulatedPnL += pnl;
 		this.position = 0;
 		this.entryPrice = 0.0;
 		this.stopLoss = 0.0;
 		this.takeProfit = 0.0;
-		this.shares = 0; // 重設股數
+		this.shares = 0;
 		return pnl;
 	}
 
@@ -391,15 +266,6 @@ class DTSimulation {
 	}
 
 	// ===================== 6. 資料存取與狀態方法 (Getters & Setters) =====================
-	/**
-	 * 更新並覆寫當前的 K 線數據物件
-	 * @param time K 線時間戳記
-	 * @param open 開盤價
-	 * @param high 最高價
-	 * @param low 最低價
-	 * @param close 收盤價
-	 * @param volume 成交量
-	 */
 	public void updateKBar(LocalTime time, double open, double high, double low, double close, long volume) {
 		this.time = time;
 		this.open = open;
@@ -409,81 +275,18 @@ class DTSimulation {
 		this.volume = volume;
 	}
 
-	/**
-	 * 設定當日是否觸發風控熔斷機制
-	 * @param circuitBroken 是否熔斷
-	 */
 	public void setCircuitBroken(boolean circuitBroken) { isCircuitBroken = circuitBroken; }
-	
-	/**
-	 * 取得當日是否已觸發風控熔斷機制
-	 * @return 是否熔斷
-	 */
 	public boolean isCircuitBroken() { return isCircuitBroken; }
-	
-	/**
-	 * 取得當前持倉狀態
-	 * @return 持倉狀態（1: 多, -1: 空, 0: 空倉）
-	 */
 	public int getPosition() { return position; }
-	
-	/**
-	 * 取得當前持倉的實際進場成交價
-	 * @return 進場成交價
-	 */
 	public double getEntryPrice() { return entryPrice; }
-	
-	/**
-	 * 取得系統計算出的停損價
-	 * @return 停損價
-	 */
 	public double getStopLoss() { return stopLoss; }
-	
-	/**
-	 * 取得系統計算出的停利價
-	 * @return 停利價
-	 */
 	public double getTakeProfit() { return takeProfit; }
-	
-	/**
-	 * 取得當日截至目前為止累積的已實現總損益
-	 * @return 累計總損益
-	 */
 	public double getDailyAccumulatedPnL() { return dailyAccumulatedPnL; }
-
-	/**
-	 * 取得當前 K 線的時間戳記
-	 * @return 時間戳記
-	 */
 	public LocalTime getTime() { return time; }
-	
-	/**
-	 * 取得當前 K 線的開盤價
-	 * @return 開盤價
-	 */
 	public double getOpen() { return open; }
-	
-	/**
-	 * 取得當前 K 線的最高價
-	 * @return 最高價
-	 */
 	public double getHigh() { return high; }
-	
-	/**
-	 * 取得當前 K 線的最低價
-	 * @return 最低價
-	 */
 	public double getLow() { return low; }
-	
-	/**
-	 * 取得當前 K 線的收盤價
-	 * @return 收盤價
-	 */
 	public double getClose() { return close; }
-	
-	/**
-	 * 取得當前 K 線的成交量
-	 * @return 成交量
-	 */
 	public long getVolume() { return volume; }
+	public String getSymbol() { return symbol; }
 }
